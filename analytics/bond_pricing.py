@@ -20,9 +20,11 @@ def price_clean(face_value: float, coupon_rate: float, ytm: float, years: float,
 	"""
 	periods = int(round(years * freq))
 	coupon = face_value * coupon_rate / freq
-	discount_rate = ytm / freq
-	pv_coupons = sum(coupon / ((1 + discount_rate) ** t) for t in range(1, periods + 1))
-	pv_face = face_value / ((1 + discount_rate) ** periods)
+	# Interpret `ytm` as annual effective rate that compounds `freq` times per year.
+	# Convert to periodic rate r where (1+r)^freq = 1+ytm
+	periodic_rate = (1 + ytm) ** (1 / freq) - 1
+	pv_coupons = sum(coupon / ((1 + periodic_rate) ** t) for t in range(1, periods + 1))
+	pv_face = face_value / ((1 + periodic_rate) ** periods)
 	return pv_coupons + pv_face
 
 def cashflows(face_value: float, coupon_rate: float, years: float, freq: int = 2) -> List[float]:

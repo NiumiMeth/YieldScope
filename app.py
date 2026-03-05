@@ -9,7 +9,7 @@ from visualizations.dashboards import show_portfolio_overview
 
 st.title('Bond Portfolio Analytics Dashboard')
 
-DEFAULT_DATA = 'data/sample_portfolio.csv'
+DEFAULT_DATA = 'data/Details.csv'
 
 path = st.sidebar.text_input('Portfolio path', DEFAULT_DATA)
 try:
