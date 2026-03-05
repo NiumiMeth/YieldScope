@@ -2,25 +2,36 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
-from .charts import yield_scatter, maturity_histogram, income_projection_chart, coupon_calendar_visual
-from analytics.transactions import last_next_coupon, coupon_schedule, price_from_yield, accrint, full_price_from_clean, funding_cost_over_period
+from .charts import (
+    yield_curve, 
+    maturity_distribution, 
+    monthly_income_chart, 
+    coupon_calendar_visual,
+    yield_scatter
+)
+from analytics.transactions import (
+    last_next_coupon, 
+    coupon_schedule, 
+    price_from_yield, 
+    accrint, 
+    full_price_from_clean, 
+    funding_cost_over_period
+)
 
-def _clean_numeric(val):
+def _parse_numeric(val):
     """Helper to convert string-based currency/percents to clean floats."""
-    if pd.isna(val) or val == '':
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    # Remove LKR, Rs, commas, and whitespace
-    clean_val = str(val).replace('LKR', '').replace('Rs', '').replace(',', '').strip()
-    if clean_val.endswith('%'):
-        return float(clean_val[:-1]) / 100.0
+    if pd.isna(val) or val == '': return 0.0
+    if isinstance(val, (int, float)): return float(val)
+    s = str(val).replace('LKR', '').replace('Rs', '').replace(',', '').strip()
+    if s.endswith('%'):
+        return float(s[:-1]) / 100.0
     try:
-        return float(clean_val)
-    except ValueError:
+        return float(s)
+    except:
         return 0.0
 
 def show_portfolio_overview(df: pd.DataFrame):
+    # Professional Styling
     st.markdown("""
         <style>
         div[data-testid="stMetricValue"] { font-size: 1.8rem; font-weight: 700; color: #1e293b; }
@@ -33,265 +44,161 @@ def show_portfolio_overview(df: pd.DataFrame):
         st.warning("Please upload a portfolio file to generate analytics.")
         return
 
-    # --- 1. SMART COLUMN DETECTOR & CLEANING ---
+    # --- 1. DATA PREPROCESSING & SMART MAPPING ---
+    df = df.copy()
+    today = pd.Timestamp.today().normalize()
+
     name_col = next((c for c in df.columns if any(k in c.lower() for k in ['isin', 'instrument', 'deal', 'party'])), df.columns[0])
-    yield_col = next((c for c in df.columns if 'yield' in c.lower()), None)
-    face_col = next((c for c in df.columns if any(k in c.lower() for k in ['face', 'qty', 'units'])), None)
-    mat_col = next((c for c in df.columns if 'mat' in c.lower()), None)
+    face_col = next((c for c in df.columns if 'face' in c.lower() or 'qty' in c.lower()), None)
     coupon_col = next((c for c in df.columns if 'coupon' in c.lower() or 'cupon' in c.lower()), None)
+    mat_col = next((c for c in df.columns if 'mat' in c.lower()), None)
+    yield_col = next((c for c in df.columns if 'yield' in c.lower()), None)
+    clean_col = next((c for c in df.columns if 'clean' in c.lower() or 'price' in c.lower()), None)
 
-    # Apply cleaning to numeric columns to prevent the 'str' / 'int' error
-    df[face_col] = df[face_col].apply(_clean_numeric)
-    if yield_col: df[yield_col] = df[yield_col].apply(_clean_numeric)
-    if coupon_col: df[coupon_col] = df[coupon_col].apply(_clean_numeric)
+    processed_rows = []
+    for _, r in df.iterrows():
+        face = _parse_numeric(r.get(face_col, 0))
+        c_rate = _parse_numeric(r.get(coupon_col, 0))
+        if c_rate > 1: c_rate /= 100.0 
+        
+        maturity = pd.to_datetime(r.get(mat_col))
+        yld = _parse_numeric(r.get(yield_col, 0))
+        if yld > 1: yld /= 100.0
+        
+        try:
+            ai = accrint(today, maturity, c_rate, face=face, freq=2)
+        except: ai = 0.0
+            
+        clean_px = _parse_numeric(r.get(clean_col, 100))
+        mv = (clean_px / 100.0 * face + ai) if clean_px > 2 else (clean_px * face + ai)
 
-    # --- 2. EXECUTIVE SUMMARY ---
-    st.title("💼 Portfolio Management Suite")
-    
+        processed_rows.append({
+            "Bond_Name": r.get(name_col) or "Bond",
+            "Maturity_Date": maturity,
+            "Coupon_Rate": c_rate * 100,
+            "Yield_Rate": yld * 100,
+            "Face_Value": face,
+            "Market Value": mv,
+            "Accrued_Interest": ai,
+            "Initial Inv Date": r.get('Invest date') or r.get('Initial Inv Date') or today
+        })
+
+    pdf = pd.DataFrame(processed_rows)
+
+    # --- 2. EXECUTIVE SUMMARY KPIs ---
+    st.title("💼 Portfolio Executive Analytics")
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    total_face = df[face_col].sum()
-    avg_yield = df[yield_col].mean() if yield_col else 0
+    total_mv = pdf['Market Value'].sum()
+    avg_yield = (pdf['Yield_Rate'] * pdf['Market Value']).sum() / total_mv if total_mv > 0 else 0
     
-    kpi1.metric("Total Face Value", f"LKR {total_face:,.0f}")
+    kpi1.metric("Total Market Value", f"LKR {total_mv:,.2f}")
     kpi2.metric("Weighted Avg Yield", f"{avg_yield:.2f}%")
-    kpi3.metric("Asset Count", len(df))
+    kpi3.metric("Total Face Value", f"{pdf['Face_Value'].sum():,.0f}")
     kpi4.metric("Risk Status", "Diversified")
-
     st.divider()
 
     # --- 3. TABS ---
-    tab_summary, tab_analytics, tab_cashflow, tab_valuation = st.tabs(["📊 Portfolio Summary", "📈 Yield & Maturity", "📅 Cash Projections", "💡 Valuation & P/L"]) 
+    tab_summary, tab_analytics, tab_cashflow, tab_valuation = st.tabs([
+        "📊 Holdings", "📈 Yield & Risk", "📅 Income Schedule", "💡 Valuation & Shock"
+    ])
 
     with tab_summary:
-        show_full = st.checkbox('Show full portfolio table', value=True)
-        table_df = df if show_full else df.head(50)
-        st.download_button('Download portfolio CSV', data=table_df.to_csv(index=False).encode('utf-8'), file_name='portfolio.csv', mime='text/csv')
         st.dataframe(
-            table_df,
+            pdf,
             use_container_width=True,
             column_config={
-                mat_col: st.column_config.DateColumn("Maturity") if mat_col else None,
-                face_col: st.column_config.NumberColumn("Principal", format="LKR %,.0f") if face_col else None,
-                yield_col: st.column_config.NumberColumn("Yield", format="%.2f%%") if yield_col else None,
+                "Market Value": st.column_config.NumberColumn(format="LKR %,.2f"),
+                "Face_Value": st.column_config.NumberColumn(format="%,.0f"),
+                "Coupon_Rate": st.column_config.NumberColumn(format="%.2f%%"),
+                "Yield_Rate": st.column_config.NumberColumn(format="%.2f%%"),
+                "Maturity_Date": st.column_config.DateColumn("Maturity"),
             },
-            hide_index=True,
+            hide_index=True
         )
 
     with tab_analytics:
         col_left, col_right = st.columns(2)
         with col_left:
-            if yield_col:
-                st.plotly_chart(yield_scatter(df, yield_col, name_col), use_container_width=True, key='yield_scatter')
+            st.plotly_chart(yield_curve(pdf), use_container_width=True)
         with col_right:
-            if mat_col:
-                st.plotly_chart(maturity_histogram(df, mat_col), use_container_width=True, key='maturity_histogram')
+            st.plotly_chart(maturity_distribution(pdf), use_container_width=True)
 
     with tab_cashflow:
         st.subheader("Liquidity & Income Schedule")
-        cf_data = []
-        today = pd.Timestamp.today().normalize()
-        
-        for _, r in df.iterrows():
+        cf_list = []
+        for _, r in pdf.iterrows():
             try:
-                # Frequency set to 2 for semiannual treasury bonds
-                schedule = coupon_schedule(r[mat_col], freq=2)
+                schedule = coupon_schedule(r['Maturity_Date'], freq=2)
                 for d in schedule:
                     if today < d <= (today + pd.DateOffset(months=12)):
-                        # Safely handle coupon normalization
-                        c_rate = r[coupon_col] / 100 if r[coupon_col] > 1 else r[coupon_col]
-                        payment = (r[face_col] * c_rate) / 2
-                        cf_data.append({'date': d, 'bond': r[name_col], 'payment': payment})
+                        amt = (r['Face_Value'] * (r['Coupon_Rate']/100)) / 2
+                        cf_list.append({'Date': d, 'Bond': r['Bond_Name'], 'Amount': amt})
             except: continue
         
-        cf_df = pd.DataFrame(cf_data)
+        cf_df = pd.DataFrame(cf_list)
         if not cf_df.empty:
-            cf_df['date'] = pd.to_datetime(cf_df['date'])
-            st.plotly_chart(income_projection_chart(cf_df), use_container_width=True, key='income_projection')
-            st.dataframe(cf_df.sort_values('date'), use_container_width=True, hide_index=True)
-
-            # Calendar visual: convert to expected column names and render
-            cf_vis = cf_df.rename(columns={'date': 'Date', 'payment': 'Amount', 'bond': 'Bond'})
-            cf_vis['Date'] = pd.to_datetime(cf_vis['Date'])
-            st.subheader('Payment Intensity Calendar')
-            st.plotly_chart(coupon_calendar_visual(cf_vis), use_container_width=True, key='payment_calendar')
-
-            # Monthly slide-style summary
-            st.markdown("### 🗓️ Monthly Payment Schedule")
-            months = cf_vis.sort_values('Date')['Date'].dt.strftime('%B %Y').unique()
+            st.plotly_chart(monthly_income_chart(cf_df), use_container_width=True)
+            st.plotly_chart(coupon_calendar_visual(cf_df), use_container_width=True)
+            
+            # Monthly Dropdowns
+            months = cf_df.sort_values('Date')['Date'].dt.strftime('%B %Y').unique()
             for month in months:
-                with st.expander(f"💰 {month}", expanded=(month == months[0])):
-                    month_data = cf_vis[cf_vis['Date'].dt.strftime('%B %Y') == month]
-                    st.table(month_data[['Date', 'Bond', 'Amount']].assign(
+                with st.expander(f"💰 Payments for {month}"):
+                    month_data = cf_df[cf_df['Date'].dt.strftime('%B %Y') == month]
+                    st.table(month_data.assign(
                         Date=lambda x: x['Date'].dt.strftime('%Y-%m-%d'),
                         Amount=lambda x: x['Amount'].map('LKR {:,.2f}'.format)
                     ))
-    
+
     with tab_valuation:
-        st.subheader('Valuation Settings')
+        st.subheader('Market Sensitivity Analysis')
         col1, col2, col3 = st.columns(3)
-        valuation_date = col1.date_input('Valuation date', value=pd.Timestamp.today().date())
-        shock_bps = col2.number_input('Global yield shock (bps)', value=0, step=1)
-        funding_rate_pct = col3.number_input('Funding cost (annual %)', value=0.0, step=0.01)
+        v_date = col1.date_input('Valuation date', value=today.date())
+        shock_bps = col2.number_input('Global yield shock (bps)', value=0, step=25)
+        funding_rate_pct = col3.number_input('Funding cost (annual %)', value=9.0, step=0.5)
 
-        # Formulas / Documentation (LaTeX)
-        with st.expander('Formulas (click to expand)'):
-            st.write('Price, Accrued Interest and Funding Cost formulas used by the valuation engine:')
-            st.latex(r"""P_{\text{clean}}(\%) = \frac{100}{F}\sum_{i=1}^{n}\frac{CF_i}{(1+y)^{t_i}}""")
-            st.write('where $CF_i$ are coupon cashflows (last period includes principal $F$), $y$ is the annual yield (decimal), and $t_i$ is time in years from valuation date.')
-            st.latex(r"""\text{Accrued Interest (AI)} = \text{Coupon}\times\frac{\text{days\_elapsed}}{\text{period\_days}},\quad \text{Coupon}=F\cdot\frac{r}{f}""")
-            st.write('Here $r$ is the annual coupon rate (decimal) and $f$ is coupon frequency per year (e.g. $2$ for semiannual).')
-            st.latex(r"""\text{Full Price (LKR)} = \frac{P_{\text{clean}}}{100}\times F + AI""")
-            st.latex(r"""\text{Funding Cost} = B\times R_{\text{fund}} \times \frac{\text{days}}{365} """)
-            st.write('Where $B$ is the running balance (LKR), $R_{\text{fund}}$ is the annual funding rate (decimal).')
+        with st.expander('View Pricing Formulas (LaTeX)'):
+            st.latex(r"P_{clean} = \sum_{t=1}^{n} \frac{C}{(1+y)^t} + \frac{F}{(1+y)^n}")
+            [Image of the bond pricing formula for clean price]
 
-        # compute per-ISIN valuation and P/L
-        vdate = pd.to_datetime(valuation_date)
+        vdate_ts = pd.to_datetime(v_date)
         shock = float(shock_bps) / 10000.0
         funding_rate = float(funding_rate_pct) / 100.0
 
-        rows = []
-        for _, r in df.iterrows():
+        val_rows = []
+        for _, r in pdf.iterrows():
             try:
-                isin = r[name_col]
-                face = float(r[face_col]) if face_col and not pd.isna(r[face_col]) else 0.0
-                coupon = float(r[coupon_col]) if coupon_col and not pd.isna(r[coupon_col]) else 0.0
-                # ensure coupon is decimal
-                coupon = coupon/100.0 if coupon > 1 else coupon
-                current_yield = float(r[yield_col]) if yield_col and not pd.isna(r[yield_col]) else None
-                # initial cost: prefer Market value column if present
-                init_cost = float(r['Market value']) if 'Market value' in r and not pd.isna(r.get('Market value')) else float(r.get('Market Value', 0.0) or 0.0)
+                coupon = r['Coupon_Rate'] / 100
+                face = r['Face_Value']
+                curr_y = r['Yield_Rate'] / 100
+                init_cost = r['Market Value']
 
-                # valuation clean price percent at vdate
-                val_clean = price_from_yield(vdate, r[mat_col], coupon, current_yield, face=face, freq=2) if current_yield is not None else None
-                val_ai = accrint(vdate, r[mat_col], coupon, face=face, freq=2)
-                val_full = full_price_from_clean(val_clean, val_ai, face=face) if val_clean is not None else None
+                # Calculate Shocked Price
+                s_yield = curr_y + shock
+                s_clean = price_from_yield(vdate_ts, r['Maturity_Date'], coupon, s_yield, face=face)
+                s_ai = accrint(vdate_ts, r['Maturity_Date'], coupon, face=face)
+                s_full = (s_clean/100 * face) + s_ai
 
-                # shocked valuation
-                shocked_yield = None if current_yield is None else (current_yield + shock)
-                shocked_clean = price_from_yield(vdate, r[mat_col], coupon, shocked_yield, face=face, freq=2) if shocked_yield is not None else None
-                shocked_ai = accrint(vdate, r[mat_col], coupon, face=face, freq=2)
-                shocked_full = full_price_from_clean(shocked_clean, shocked_ai, face=face) if shocked_clean is not None else None
+                # Funding Cost
+                days = (vdate_ts - pd.to_datetime(r['Initial Inv Date'])).days
+                f_cost = funding_cost_over_period(init_cost, funding_rate, max(0, days))
 
-                # funding cost: from initial invest date to valuation
-                inv_date = pd.to_datetime(r.get('Initial Inv Date')) if 'Initial Inv Date' in r else None
-                days = (vdate - inv_date).days if inv_date is not None and not pd.isna(inv_date) else 0
-                fund_cost = funding_cost_over_period(init_cost, funding_rate, days) if init_cost and days>0 else 0.0
-
-                pl = None
-                if val_full is not None:
-                    pl = (val_full - init_cost) - fund_cost
-
-                rows.append({
-                    'ISIN': isin,
+                val_rows.append({
+                    'ISIN': r['Bond_Name'],
                     'Face': face,
-                    'Coupon': coupon,
                     'Init Cost': init_cost,
-                    'Valuation (clean%)': val_clean,
-                    'Valuation (full)': val_full,
-                    'Shocked Val (full)': shocked_full,
-                    'Funding Cost': fund_cost,
-                    'P/L': pl,
-                    'maturity': r[mat_col],
-                    'current_yield': current_yield,
-                    'inv_date': r.get('Initial Inv Date') if 'Initial Inv Date' in r else None,
+                    'Shocked Value': s_full,
+                    'Funding Cost': f_cost,
+                    'P/L': (s_full - init_cost) - f_cost
                 })
-            except Exception:
-                continue
+            except: continue
 
-        val_df = pd.DataFrame(rows)
-        if not val_df.empty:
-            # allow per-ISIN overrides: shock (bps) and funding rate (%) using an editable table
-            val_df['Shock_bps'] = 0
-            val_df['FundingRatePct'] = funding_rate_pct
-
-            editable_cols = ['ISIN', 'Face', 'Coupon', 'Init Cost', 'Valuation (full)', 'Shock_bps', 'FundingRatePct']
-            try:
-                edited = st.experimental_data_editor(val_df[editable_cols], num_rows="dynamic")
-            except Exception:
-                edited = st.data_editor(val_df[editable_cols], num_rows="dynamic")
-
-            # recompute shocked valuation and P/L per edited row
-            results = []
-            for _, er in edited.iterrows():
-                try:
-                    isin = er['ISIN']
-                    row = val_df[val_df['ISIN'] == isin].iloc[0]
-                    mat = row['maturity']
-                    coupon = row['Coupon']
-                    coupon = coupon/100.0 if coupon > 1 else coupon
-                    face = row['Face']
-                    current_yield = row['current_yield']
-                    init_cost = row['Init Cost']
-                    shock = float(er.get('Shock_bps', 0)) / 10000.0
-                    funding_rate_row = float(er.get('FundingRatePct', funding_rate_pct)) / 100.0
-
-                    shocked_yield = None if current_yield is None else (current_yield + shock)
-                    shocked_clean = price_from_yield(vdate, mat, coupon, shocked_yield, face=face, freq=2) if shocked_yield is not None else None
-                    shocked_ai = accrint(vdate, mat, coupon, face=face, freq=2)
-                    shocked_full = full_price_from_clean(shocked_clean, shocked_ai, face=face) if shocked_clean is not None else None
-
-                    inv_date = pd.to_datetime(row.get('inv_date')) if row.get('inv_date') is not None else None
-                    days = (vdate - inv_date).days if inv_date is not None and not pd.isna(inv_date) else 0
-                    fund_cost = funding_cost_over_period(init_cost, funding_rate_row, days) if init_cost and days>0 else 0.0
-
-                    pl = None
-                    if shocked_full is not None:
-                        pl = (shocked_full - init_cost) - fund_cost
-
-                    results.append({
-                        'ISIN': isin,
-                        'Init Cost': init_cost,
-                        'Shocked Val (full)': shocked_full,
-                        'Funding Cost': fund_cost,
-                        'P/L': pl,
-                        'Shock_bps': er.get('Shock_bps', 0),
-                        'FundingRatePct': er.get('FundingRatePct', funding_rate_pct),
-                    })
-                except Exception:
-                    continue
-
-            res_df = pd.DataFrame(results)
-            if not res_df.empty:
-                # Aggregated KPIs
-                total_init = res_df['Init Cost'].fillna(0.0).sum()
-                total_shocked = res_df['Shocked Val (full)'].fillna(0.0).sum()
-                total_funding = res_df['Funding Cost'].fillna(0.0).sum()
-                total_pl = res_df['P/L'].fillna(0.0).sum()
-
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric('Total Initial Cost', f"LKR {total_init:,.2f}")
-                k2.metric('Total Shocked Value', f"LKR {total_shocked:,.2f}")
-                k3.metric('Total Funding Cost', f"LKR {total_funding:,.2f}")
-                k4.metric('Total P/L', f"LKR {total_pl:,.2f}")
-
-                st.divider()
-
-                # Download results
-                csv_bytes = res_df.to_csv(index=False).encode('utf-8')
-                st.download_button('Download Shocked Valuation CSV', data=csv_bytes, file_name='shocked_valuation.csv', mime='text/csv')
-
-                # Per-ISIN cards: allow user to select which ISINs to inspect
-                isins = res_df['ISIN'].tolist()
-                default = isins[:5]
-                sel = st.multiselect('Select ISINs to view as cards', options=isins, default=default)
-
-                for isin in sel:
-                    row = res_df[res_df['ISIN'] == isin].iloc[0]
-                    with st.expander(f"{isin}"):
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric('Init Cost', f"LKR {row['Init Cost']:,.2f}")
-                        c2.metric('Shocked Value', f"LKR {row['Shocked Val (full)']:,.2f}" if pd.notna(row['Shocked Val (full)']) else 'N/A')
-                        c3.metric('Funding Cost', f"LKR {row['Funding Cost']:,.2f}")
-                        c4.metric('P/L', f"LKR {row['P/L']:,.2f}" if pd.notna(row['P/L']) else 'N/A')
-
-                        # small comparison chart
-                        comp = pd.DataFrame({
-                            'metric': ['Init Cost', 'Shocked Value'],
-                            'amount': [row['Init Cost'] or 0.0, (row['Shocked Val (full)'] or 0.0)]
-                        })
-                        fig = px.bar(comp, x='metric', y='amount', title=f'{isin} - Init vs Shocked', template='plotly_white', color='metric')
-                        st.plotly_chart(fig, use_container_width=True, key=f'isin_chart_{isin}')
-                else:
-                    st.info('No shocked valuations computed.')
-        else:
-            st.info('No valuation rows computed.')
+        res_df = pd.DataFrame(val_rows)
+        if not res_df.empty:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Shocked Value", f"LKR {res_df['Shocked Value'].sum():,.2f}")
+            m2.metric("Total Funding Cost", f"LKR {res_df['Funding Cost'].sum():,.2f}")
+            m3.metric("Net Portfolio P/L", f"LKR {res_df['P/L'].sum():,.2f}", delta=f"{shock_bps} bps Shock")
+            
+            st.divider()
+            st.plotly_chart(px.bar(res_df, x='ISIN', y='P/L', title="P/L Impact by Asset", template="plotly_white", color='P/L', color_continuous_scale='RdYlGn'), use_container_width=True)
