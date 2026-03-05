@@ -45,28 +45,42 @@ def last_next_coupon(settlement: str | datetime, maturity: str | datetime, freq:
 
 
 def accrint(settlement: str | datetime, maturity: str | datetime, coupon_rate: float, face: float = 100.0, freq: int = 2) -> float:
+    """Accrued interest using semiannual convention (182 days per half-year).
+
+    Uses a 182-day half-year assumption as requested for Sri Lankan semiannual bonds.
+    """
     last, nxt = last_next_coupon(settlement, maturity, freq)
     coupon = face * coupon_rate / freq
     days_elapsed = (pd.to_datetime(settlement) - last).days
-    period_days = (nxt - last).days if (nxt - last).days > 0 else 1
+    # use fixed 182 days per half-year for accrual
+    period_days = 182
     fraction = days_elapsed / period_days
+    # cap fraction between 0 and 1
+    fraction = max(0.0, min(1.0, fraction))
     return coupon * fraction
 
 
 def price_from_yield(settlement: str | datetime, maturity: str | datetime, coupon_rate: float, yld: float, face: float = 100.0, freq: int = 2) -> float:
-    """Return clean price as percent of face (e.g. 89.2475)."""
+    """Return clean price as percent of face using semiannual PV formula.
+
+    PV = sum_{t=1}^{2n} (coupon/2) / (1 + yld/2)^t + face / (1 + yld/2)^{2n}
+    where yld is the annual YTM (nominal with semiannual compounding).
+    """
     settlement = pd.to_datetime(settlement)
+    # count remaining coupon periods (half-years)
     schedule = [d for d in coupon_schedule(maturity, freq) if d > settlement]
-    if not schedule:
+    periods = len(schedule)
+    if periods == 0:
         return 0.0
     coupon = face * coupon_rate / freq
+    r = yld / freq  # periodic rate (yld is nominal annual compounding semiannually)
     pv = 0.0
-    for d in schedule:
-        t = (d - settlement).days / 365.0
+    for t in range(1, periods + 1):
         cf = coupon
-        if d == pd.to_datetime(maturity):
+        if t == periods:
+            # last coupon includes redemption
             cf += face
-        pv += cf / ((1 + yld) ** t)
+        pv += cf / ((1 + r) ** t)
     return pv / face * 100.0
 
 
