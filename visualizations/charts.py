@@ -2,56 +2,59 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 
-def yield_curve(df: pd.DataFrame):
-    """Visualizes the relationship between Maturity and Yield."""
+def yield_curve(df: pd.DataFrame, yield_col: str, mat_col: str, name_col: str):
+    """Institutional Yield Curve: Relationship between Maturity and Yield."""
     fig = px.scatter(
-        df, 
-        x='Maturity_Date', 
-        y='Yield_Rate',
-        size='Market Value', 
-        color='Coupon_Rate',
-        hover_name='Bond_Name',
-        title="Portfolio Yield Curve",
-        labels={'Maturity_Date': 'Maturity', 'Yield_Rate': 'Yield (%)'}
+        df, x=mat_col, y=yield_col,
+        size=df.columns[0], color=yield_col,
+        hover_name=name_col, title="Portfolio Yield Curve Analysis",
+        labels={mat_col: 'Maturity', yield_col: 'Yield (%)'},
+        template="plotly_white", color_continuous_scale='Viridis'
     )
-    fig.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=40, b=20))
+    fig.update_layout(margin=dict(l=20, r=20, t=50, b=20))
     return fig
 
-def maturity_distribution(df: pd.DataFrame):
-    """Shows the concentration of bond maturities."""
-    # Ensure maturity is datetime
-    df['Maturity_Date'] = pd.to_datetime(df['Maturity_Date'])
+def maturity_distribution(df: pd.DataFrame, mat_col: str):
+    """Maturity Ladder: Shows concentration of principal repayments."""
+    df[mat_col] = pd.to_datetime(df[mat_col])
     fig = px.histogram(
-        df, 
-        x='Maturity_Date', 
-        nbins=20, 
-        title='Maturity Concentration',
-        color_discrete_sequence=['#636EFA']
+        df, x=mat_col, nbins=15,
+        title='Liquidity Profile (Maturity Ladder)',
+        color_discrete_sequence=['#1e293b'],
+        template="plotly_white"
     )
-    fig.update_layout(template="plotly_white")
+    fig.update_layout(bargap=0.1, margin=dict(l=20, r=20, t=50, b=20))
     return fig
 
-def monthly_income_chart(df: pd.DataFrame):
-    """Aggregates upcoming payments into a monthly bar chart."""
-    # This assumes your cash_flow_calendar helper is available or logic is included
-    from .dashboards import cash_flow_calendar 
-    cf = cash_flow_calendar(df)
+def coupon_calendar_visual(cf_df: pd.DataFrame):
+    """Payment Intensity Heatmap: Visualizes income density."""
+    if cf_df.empty: return go.Figure()
     
-    if cf.empty:
-        # Return an empty figure with a message if no data
-        fig = go.Figure()
-        fig.add_annotation(text="No upcoming payments found", showarrow=False)
-        return fig
-    
-    cf['Month'] = cf['date'].dt.strftime('%b %Y')
-    monthly = cf.groupby(['Month', 'date'])['payment'].sum().reset_index().sort_values('date')
-    
-    fig = px.bar(
-        monthly, 
-        x='Month', 
-        y='payment',
-        title="Projected Monthly Coupon Income",
-        color_discrete_sequence=['#00CC96']
+    df = cf_df.copy()
+    df['Month_Name'] = df['Date'].dt.strftime('%b')
+    df['Weekday'] = df['Date'].dt.strftime('%a')
+    agg = df.groupby(['Month_Name', 'Weekday', 'Date'], as_index=False).agg({'Amount': 'sum'})
+
+    fig = px.density_heatmap(
+        agg, x="Month_Name", y="Weekday", z="Amount",
+        title="Payment Intensity Heatmap",
+        category_orders={"Weekday": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                         "Month_Name": ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]},
+        color_continuous_scale="Viridis", template="plotly_white"
     )
-    fig.update_layout(template="plotly_white", yaxis_title="Income (LKR)")
+    fig.update_layout(xaxis_title="Month", yaxis_title="Day of Week")
     return fig
+
+def income_projection_chart(cf_df: pd.DataFrame):
+    """Monthly Bar Chart: Projected Cash Inflows."""
+    if cf_df.empty: return go.Figure()
+    cf_df['Month'] = cf_df['Date'].dt.strftime('%b %Y')
+    monthly = cf_df.groupby(['Month', 'Date'])['Amount'].sum().reset_index().sort_values('Date')
+    
+    return px.bar(
+        monthly, x='Month', y='Amount',
+        title="Projected Monthly Coupon Income",
+        color_discrete_sequence=['#10b981'],
+        template="plotly_white"
+    )
