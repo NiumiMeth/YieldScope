@@ -1,6 +1,6 @@
 import streamlit as st
-from ..services.data_loader import load_data
-from ..models.portfolio import Portfolio
+from services.data_loader import load_data
+from models.portfolio import Portfolio
 
 
 def show():

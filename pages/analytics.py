@@ -1,7 +1,7 @@
 import streamlit as st
-from ..services.data_loader import load_data
-from ..calculations.durations import macaulay_duration
-from ..calculations.yield_curve import fit_yield_curve
+from services.data_loader import load_data
+from calculations.durations import macaulay_duration
+from calculations.yield_curve import fit_yield_curve
 
 
 def show():
